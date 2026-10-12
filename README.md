@@ -14,6 +14,7 @@ Telegram bot that turns a client chat screenshot or message into a ready-to-send
 | `AI_PROVIDER` | no | `gemini` (default, free tier) or `claude` |
 | `GEMINI_API_KEY` | if gemini | Free key from aistudio.google.com |
 | `GEMINI_MODEL` | no | Defaults to `gemini-3.8-flash` |
+| `GEMINI_FALLBACK_MODELS` | no | Tried in order when the main model is busy. Default: `gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` |
 | `ANTHROPIC_API_KEY` | if claude | From console.anthropic.com |
 | `CLAUDE_MODEL` | no | Defaults to `claude-haiku-5-5` |
 | `ANTHROPIC_WORKSPACE_ID` | only if your Claude key is not workspace-scoped | Workspace ID from console.anthropic.com |

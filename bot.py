@@ -3,6 +3,7 @@ Corporate Reply Bot — Telegram
 Send a screenshot or a client's message, get a ready-to-send corporate reply.
 Follow-ups like "short", "under 3 line", "rate 8-9 tai meeting" refine the last reply.
 """
+import asyncio
 import base64
 import logging
 import os
@@ -31,6 +32,9 @@ if PROVIDER == "claude":
 else:
     PROVIDER = "gemini"
     MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    # Tried in order when the main model is busy or out of free quota
+    _fallbacks = os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite")
+    GEMINI_MODELS = [MODEL] + [m.strip() for m in _fallbacks.split(",") if m.strip() and m.strip() != MODEL]
 # Comma-separated Telegram user IDs allowed to use the bot.
 # Leave empty, or set to "any" or "*", to let anyone use it.
 _allowed_raw = os.environ.get("ALLOWED_USER_IDS", "").strip().lower()
@@ -136,12 +140,27 @@ async def call_gemini(history: list[dict]) -> str:
                 parts.append(types.Part.from_bytes(data=b["data"], mime_type=b["mime"]))
         contents.append(types.Content(role="model" if msg["role"] == "assistant" else "user", parts=parts))
 
-    resp = await gemini_client.aio.models.generate_content(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=2048),
-    )
-    return (resp.text or "").strip()
+    config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=2048)
+    last_exc = None
+    # Try the main model, then fallbacks, when a model is overloaded (503) or rate-limited (429)
+    for attempt, model in enumerate(GEMINI_MODELS):
+        try:
+            resp = await gemini_client.aio.models.generate_content(model=model, contents=contents, config=config)
+            if model != MODEL:
+                log.info("Answered with fallback model %s", model)
+            return (resp.text or "").strip()
+        except Exception as exc:
+            if not is_busy_error(exc):
+                raise
+            last_exc = exc
+            log.warning("Model %s busy (%s), trying next", model, str(exc)[:80])
+            await asyncio.sleep(1 + attempt)
+    raise last_exc
+
+
+def is_busy_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(k in msg for k in ("503", "unavailable", "high demand", "overloaded", "429", "resource_exhausted"))
 
 
 async def ask_ai(chat_id: int, content: list[dict]) -> str:
@@ -149,16 +168,21 @@ async def ask_ai(chat_id: int, content: list[dict]) -> str:
     history.append({"role": "user", "content": content})
     history[:] = trim(history)
 
-    reply = await (call_claude(history) if PROVIDER == "claude" else call_gemini(history))
-    if not reply:
+    try:
+        reply = await (call_claude(history) if PROVIDER == "claude" else call_gemini(history))
+        if not reply:
+            raise RuntimeError("empty reply")
+    except Exception:
         history.pop()  # don't keep a turn with no answer
-        raise RuntimeError("empty reply")
+        raise
     history.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
     return reply
 
 
 def error_text(exc: Exception) -> str:
     msg = str(exc).lower()
+    if "503" in msg or "unavailable" in msg or "high demand" in msg or "overloaded" in msg:
+        return "AI server ekhon onek busy. 1-2 minute por abar pathan."
     if "429" in msg or "quota" in msg or "resource_exhausted" in msg or "rate" in msg:
         return "Ajker free limit shesh ba onek druto request hoyeche. Kichukkhon por abar try korun."
     if "credit balance" in msg or "billing" in msg:
