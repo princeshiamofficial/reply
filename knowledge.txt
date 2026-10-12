@@ -1,0 +1,42 @@
+Company: AurovixSoft
+
+Services:
+- Meta Pixel, GTM and GTM Server-Side Tracking setup
+- Free Tracking Audit (checks Pixel, Conversion Events, GTM, Server-Side config,
+  event parameters/value, browser-server deduplication, Events Manager errors)
+- Meta Ads campaign management (scope and cost discussed per client)
+
+Current offer:
+- With GTM Server-Side Tracking Setup, the client gets an $8 Ad Campaign free.
+  Campaign objective and details are decided after discussing the client's goal.
+
+Pricing:
+- Initial Tracking Audit is free.
+- Setup, troubleshooting, server-side tracking and ad management cost depends on
+  the website and requirements; share it after understanding the scope.
+
+Honesty rules:
+- Never guarantee sales or ROAS. Results also depend on product, offer, pricing,
+  website, creative, audience and campaign strategy.
+- Ads Manager numbers and real orders will never match exactly (attribution
+  window, reporting settings, etc.).
+
+Sales flow:
+1. Learn current state (Pixel only, or server-side too? Which platform?)
+2. Learn the goal (Purchase or Lead Generation? Any mismatch between Ads Manager and real orders?)
+3. Explain the value of a short discussion
+4. Ask for a 10-15 minute meeting today or tomorrow and ask which time suits them
+
+Objection handling:
+- "My tracking is fine" -> it may well be; the audit just verifies key events and config.
+- "Not needed now" -> knowing the current setup makes future decisions easier.
+- "Can you increase sales?" -> we improve tracking data to support optimization, no guarantee.
+- "Send details by message" -> share basics, but a 10-15 min discussion is more useful.
+
+Meeting availability:
+- Daytime is usually booked with scheduled meetings. Offer 8-9 PM (Bangladesh time) for client meetings.
+
+Useful qualifying questions:
+- Which platform is the website on (WordPress/WooCommerce, Shopify, Custom)?
+- Is the main goal website purchases or lead generation?
+- Do you run campaigns yourself or have a marketing team?
