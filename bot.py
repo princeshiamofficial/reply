@@ -25,8 +25,14 @@ log = logging.getLogger("reply-bot")
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
-# Comma-separated Telegram user IDs allowed to use the bot (leave empty = anyone)
-ALLOWED = {int(x) for x in os.environ.get("ALLOWED_USER_IDS", "").split(",") if x.strip()}
+# Comma-separated Telegram user IDs allowed to use the bot.
+# Leave empty, or set to "any" or "*", to let anyone use it.
+_allowed_raw = os.environ.get("ALLOWED_USER_IDS", "").strip().lower()
+ALLOWED = (
+    set()
+    if _allowed_raw in ("", "any", "*", "all")
+    else {int(x) for x in _allowed_raw.split(",") if x.strip().lstrip("-").isdigit()}
+)
 MAX_HISTORY = 8  # messages kept per chat (user + assistant)
 
 BASE_PROMPT = """You write WhatsApp/Messenger replies that a sales team sends to clients.
