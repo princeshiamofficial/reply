@@ -8,7 +8,6 @@ import logging
 import os
 from pathlib import Path
 
-from anthropic import AsyncAnthropic
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -25,8 +24,13 @@ log = logging.getLogger("reply-bot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# Which AI to use: "gemini" (free tier available) or "claude"
+PROVIDER = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+if PROVIDER == "claude":
+    MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
+else:
+    PROVIDER = "gemini"
+    MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 # Comma-separated Telegram user IDs allowed to use the bot.
 # Leave empty, or set to "any" or "*", to let anyone use it.
 _allowed_raw = os.environ.get("ALLOWED_USER_IDS", "").strip().lower()
@@ -69,12 +73,23 @@ def load_system_prompt() -> str:
 
 
 SYSTEM_PROMPT = load_system_prompt()
-# Keys not scoped to a workspace need the workspace ID sent as a header
-_workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
-client = AsyncAnthropic(
-    api_key=ANTHROPIC_KEY,
-    default_headers={"anthropic-workspace-id": _workspace} if _workspace else None,
-)
+if PROVIDER == "claude":
+    from anthropic import AsyncAnthropic
+
+    # Keys not scoped to a workspace need the workspace ID sent as a header
+    _workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+    claude_client = AsyncAnthropic(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        default_headers={"anthropic-workspace-id": _workspace} if _workspace else None,
+    )
+else:
+    from google import genai
+    from google.genai import types
+
+    gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+# History is stored in one neutral format:
+# {"role": "user"|"assistant", "content": [{"type": "text", "text": ...} | {"type": "image", "mime": ..., "data": bytes}]}
 histories: dict[int, list[dict]] = {}
 
 
@@ -89,20 +104,68 @@ def trim(history: list[dict]) -> list[dict]:
     return history
 
 
-async def ask_claude(chat_id: int, content: list[dict]) -> str:
+async def call_claude(history: list[dict]) -> str:
+    messages = []
+    for msg in history:
+        blocks = []
+        for b in msg["content"]:
+            if b["type"] == "text":
+                blocks.append({"type": "text", "text": b["text"]})
+            else:
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": b["mime"],
+                               "data": base64.b64encode(b["data"]).decode()},
+                })
+        messages.append({"role": msg["role"], "content": blocks})
+
+    resp = await claude_client.messages.create(
+        model=MODEL, max_tokens=800, system=SYSTEM_PROMPT, messages=messages,
+    )
+    return "".join(b.text for b in resp.content if b.type == "text").strip()
+
+
+async def call_gemini(history: list[dict]) -> str:
+    contents = []
+    for msg in history:
+        parts = []
+        for b in msg["content"]:
+            if b["type"] == "text":
+                parts.append(types.Part.from_text(text=b["text"]))
+            else:
+                parts.append(types.Part.from_bytes(data=b["data"], mime_type=b["mime"]))
+        contents.append(types.Content(role="model" if msg["role"] == "assistant" else "user", parts=parts))
+
+    resp = await gemini_client.aio.models.generate_content(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=2048),
+    )
+    return (resp.text or "").strip()
+
+
+async def ask_ai(chat_id: int, content: list[dict]) -> str:
     history = histories.setdefault(chat_id, [])
     history.append({"role": "user", "content": content})
     history[:] = trim(history)
 
-    resp = await client.messages.create(
-        model=MODEL,
-        max_tokens=800,
-        system=SYSTEM_PROMPT,
-        messages=history,
-    )
-    reply = "".join(b.text for b in resp.content if b.type == "text").strip()
-    history.append({"role": "assistant", "content": reply})
+    reply = await (call_claude(history) if PROVIDER == "claude" else call_gemini(history))
+    if not reply:
+        history.pop()  # don't keep a turn with no answer
+        raise RuntimeError("empty reply")
+    history.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
     return reply
+
+
+def error_text(exc: Exception) -> str:
+    msg = str(exc).lower()
+    if "429" in msg or "quota" in msg or "resource_exhausted" in msg or "rate" in msg:
+        return "Ajker free limit shesh ba onek druto request hoyeche. Kichukkhon por abar try korun."
+    if "credit balance" in msg or "billing" in msg:
+        return "AI account-e credit/billing somossha. Admin-ke janan."
+    if "api key" in msg or "401" in msg or "permission" in msg:
+        return "AI API key-e somossha. Admin-ke janan."
+    return "Error hoyeche, abar try korun."
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,11 +186,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     try:
-        reply = await ask_claude(update.effective_chat.id, [{"type": "text", "text": update.message.text}])
+        reply = await ask_ai(update.effective_chat.id, [{"type": "text", "text": update.message.text}])
         await update.message.reply_text(reply)
-    except Exception:
+    except Exception as exc:
         log.exception("text failed")
-        await update.message.reply_text("Error hoyeche, abar try korun.")
+        await update.message.reply_text(error_text(exc))
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,17 +206,17 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg_file = await doc.get_file()
             media_type = doc.mime_type or "image/png"
 
-        data = base64.b64encode(bytes(await tg_file.download_as_bytearray())).decode()
+        data = bytes(await tg_file.download_as_bytearray())
         caption = update.message.caption or "Write a reply to the client's latest message in this chat."
         content = [
-            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}},
+            {"type": "image", "mime": media_type, "data": data},
             {"type": "text", "text": caption},
         ]
-        reply = await ask_claude(update.effective_chat.id, content)
+        reply = await ask_ai(update.effective_chat.id, content)
         await update.message.reply_text(reply)
-    except Exception:
+    except Exception as exc:
         log.exception("photo failed")
-        await update.message.reply_text("Image process korte parini, abar try korun.")
+        await update.message.reply_text(error_text(exc))
 
 
 def main():
@@ -162,7 +225,7 @@ def main():
     app.add_handler(CommandHandler("new", new_chat))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    log.info("Bot running with model %s", MODEL)
+    log.info("Bot running with %s model %s", PROVIDER, MODEL)
 
     # On Render (or any host with a public URL) use webhook mode; locally use polling.
     public_url = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL")

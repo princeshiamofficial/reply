@@ -11,11 +11,16 @@ Telegram bot that turns a client chat screenshot or message into a ready-to-send
 | Name | Required | Notes |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | From @BotFather |
-| `ANTHROPIC_API_KEY` | yes | From console.anthropic.com |
-| `ALLOWED_USER_IDS` | recommended | Comma-separated Telegram user IDs |
+| `AI_PROVIDER` | no | `gemini` (default, free tier) or `claude` |
+| `GEMINI_API_KEY` | if gemini | Free key from aistudio.google.com |
+| `GEMINI_MODEL` | no | Defaults to `gemini-3.8-flash` |
+| `ANTHROPIC_API_KEY` | if claude | From console.anthropic.com |
+| `CLAUDE_MODEL` | no | Defaults to `claude-haiku-5-5` |
+| `ANTHROPIC_WORKSPACE_ID` | only if your Claude key is not workspace-scoped | Workspace ID from console.anthropic.com |
+| `ALLOWED_USER_IDS` | recommended | Comma-separated Telegram user IDs, or `any` |
 | `WEBHOOK_SECRET` | recommended | Any random string |
-| `CLAUDE_MODEL` | no | Defaults to `claude-sonnet-5-5` |
-| `ANTHROPIC_WORKSPACE_ID` | only if your key is not workspace-scoped | Workspace ID from console.anthropic.com |
+
+Note: Gemini free-tier data may be used by Google to improve its products. Use a paid key for sensitive client data.
 
 ## Deploy on Render (free)
 New → Web Service → this repo
