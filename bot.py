@@ -21,6 +21,8 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("reply-bot")
+# httpx logs every request URL, and Telegram URLs contain the bot token — keep them out of logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -67,7 +69,12 @@ def load_system_prompt() -> str:
 
 
 SYSTEM_PROMPT = load_system_prompt()
-client = AsyncAnthropic(api_key=ANTHROPIC_KEY)
+# Keys not scoped to a workspace need the workspace ID sent as a header
+_workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+client = AsyncAnthropic(
+    api_key=ANTHROPIC_KEY,
+    default_headers={"anthropic-workspace-id": _workspace} if _workspace else None,
+)
 histories: dict[int, list[dict]] = {}
 
 

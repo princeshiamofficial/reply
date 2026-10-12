@@ -15,6 +15,7 @@ Telegram bot that turns a client chat screenshot or message into a ready-to-send
 | `ALLOWED_USER_IDS` | recommended | Comma-separated Telegram user IDs |
 | `WEBHOOK_SECRET` | recommended | Any random string |
 | `CLAUDE_MODEL` | no | Defaults to `claude-sonnet-5-5` |
+| `ANTHROPIC_WORKSPACE_ID` | only if your key is not workspace-scoped | Workspace ID from console.anthropic.com |
 
 ## Deploy on Render (free)
 New → Web Service → this repo
