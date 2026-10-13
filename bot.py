@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 
+from audit import audit_context_for_ai, find_url, format_report, run_audit
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -249,10 +250,27 @@ def error_text(exc: Exception) -> str:
     return "Error hoyeche, abar try korun."
 
 
+async def with_website_audit(update: Update, text: str) -> str:
+    """If the message has a website link, audit it, send the internal report, and add findings for the AI."""
+    url = find_url(text)
+    if not url or os.environ.get("WEBSITE_AUDIT", "1") == "0":
+        return text
+    status = await update.message.reply_text(f"🔍 {url} check korchi...")
+    try:
+        result = await run_audit(url)
+        await status.edit_text(format_report(result))
+        return f"{text}\n\n[{audit_context_for_ai(result)}]"
+    except Exception:
+        log.exception("audit failed")
+        await status.edit_text("Website audit kora jayni, shudhu reply likhchi.")
+        return text
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Client-er screenshot ba message pathan, ami corporate reply likhe dibo.\n"
         "Por-e 'short', 'under 3 line' etc. likhe reply change korte parben.\n"
+        "Website link dile ami auto audit kore report dibo (platform, GTM, Pixel, server-side).\n"
         "/new — notun client shuru korte."
     )
 
@@ -267,7 +285,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     try:
-        reply = await ask_ai(update.effective_chat.id, [{"type": "text", "text": update.message.text}])
+        text = await with_website_audit(update, update.message.text)
+        reply = await ask_ai(update.effective_chat.id, [{"type": "text", "text": text}])
         await update.message.reply_text(reply)
     except Exception as exc:
         log.exception("text failed")
@@ -289,6 +308,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = bytes(await tg_file.download_as_bytearray())
         caption = update.message.caption or "Write a reply to the client's latest message in this chat."
+        caption = await with_website_audit(update, caption)
         content = [
             {"type": "image", "mime": media_type, "data": data},
             {"type": "text", "text": caption},
