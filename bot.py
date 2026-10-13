@@ -84,6 +84,8 @@ if PROVIDER == "claude":
     _workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     claude_client = AsyncAnthropic(
         api_key=os.environ["ANTHROPIC_API_KEY"],
+        timeout=float(os.environ.get("AI_TIMEOUT_SECONDS", "25")) * 2,
+        max_retries=1,
         default_headers={"anthropic-workspace-id": _workspace} if _workspace else None,
     )
 else:
@@ -140,43 +142,77 @@ async def call_gemini(history: list[dict]) -> str:
                 parts.append(types.Part.from_bytes(data=b["data"], mime_type=b["mime"]))
         contents.append(types.Content(role="model" if msg["role"] == "assistant" else "user", parts=parts))
 
-    config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, max_output_tokens=2048)
-    last_exc = None
-    # Try the main model, then fallbacks, when a model is overloaded (503) or rate-limited (429)
-    for attempt, model in enumerate(GEMINI_MODELS):
+    last_exc: Exception = RuntimeError("no model answered")
+    # Try the main model, then fallbacks, when a model is busy, slow, or rate-limited
+    for model in GEMINI_MODELS:
         try:
-            resp = await gemini_client.aio.models.generate_content(model=model, contents=contents, config=config)
-            if model != MODEL:
-                log.info("Answered with fallback model %s", model)
-            return (resp.text or "").strip()
+            text = await gemini_once(model, contents)
+            if text:
+                if model != MODEL:
+                    log.info("Answered with fallback model %s", model)
+                return text
+            last_exc = RuntimeError(f"empty reply from {model}")
+            log.warning("Model %s gave an empty reply, trying next", model)
         except Exception as exc:
             if not is_busy_error(exc):
                 raise
             last_exc = exc
-            log.warning("Model %s busy (%s), trying next", model, str(exc)[:80])
-            await asyncio.sleep(1 + attempt)
+            log.warning("Model %s busy/slow (%s), trying next", model, str(exc)[:80] or type(exc).__name__)
     raise last_exc
 
 
+async def gemini_once(model: str, contents) -> str:
+    # Low thinking keeps short replies fast; drop it if a model doesn't support the setting
+    thinking = types.ThinkingConfig(thinking_level="low") if model not in _NO_THINKING_CFG else None
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT, max_output_tokens=2048, thinking_config=thinking,
+    )
+    try:
+        resp = await asyncio.wait_for(
+            gemini_client.aio.models.generate_content(model=model, contents=contents, config=config),
+            timeout=GEMINI_TIMEOUT,
+        )
+    except Exception as exc:
+        if thinking is not None and "thinking" in str(exc).lower():
+            _NO_THINKING_CFG.add(model)
+            return await gemini_once(model, contents)
+        raise
+    return (resp.text or "").strip()
+
+
+_NO_THINKING_CFG: set[str] = set()
+GEMINI_TIMEOUT = float(os.environ.get("AI_TIMEOUT_SECONDS", "25"))
+
+
 def is_busy_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
     msg = str(exc).lower()
-    return any(k in msg for k in ("503", "unavailable", "high demand", "overloaded", "429", "resource_exhausted"))
+    return any(k in msg for k in (
+        "503", "500", "504", "unavailable", "high demand", "overloaded", "deadline",
+        "429", "resource_exhausted", "timeout", "timed out",
+    ))
+
+
+_chat_locks: dict[int, asyncio.Lock] = {}
 
 
 async def ask_ai(chat_id: int, content: list[dict]) -> str:
-    history = histories.setdefault(chat_id, [])
-    history.append({"role": "user", "content": content})
-    history[:] = trim(history)
+    # Different chats run in parallel; messages within one chat are answered in order
+    async with _chat_locks.setdefault(chat_id, asyncio.Lock()):
+        history = histories.setdefault(chat_id, [])
+        history.append({"role": "user", "content": content})
+        history[:] = trim(history)
 
-    try:
-        reply = await (call_claude(history) if PROVIDER == "claude" else call_gemini(history))
-        if not reply:
-            raise RuntimeError("empty reply")
-    except Exception:
-        history.pop()  # don't keep a turn with no answer
-        raise
-    history.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
-    return reply
+        try:
+            reply = await (call_claude(history) if PROVIDER == "claude" else call_gemini(history))
+            if not reply:
+                raise RuntimeError("empty reply")
+        except Exception:
+            history.pop()  # don't keep a turn with no answer
+            raise
+        history.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+        return reply
 
 
 def error_text(exc: Exception) -> str:
@@ -243,8 +279,65 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error_text(exc))
 
 
+async def keep_awake(public_url: str):
+    """Ping our own public URL so Render's free plan never spins the bot down (it sleeps after 15 idle min)."""
+    import httpx
+
+    url = public_url.rstrip("/") + "/health"
+    interval = int(os.environ.get("KEEP_AWAKE_MINUTES", "10")) * 60
+    async with httpx.AsyncClient(timeout=30) as http:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await http.get(url)
+            except Exception as exc:
+                log.warning("keep-awake ping failed: %s", exc)
+
+
+async def run_webhook_server(app: Application, public_url: str):
+    from aiohttp import web
+
+    secret = os.environ.get("WEBHOOK_SECRET") or None
+    port = int(os.environ.get("PORT", "10000"))
+
+    async def telegram_hook(request: web.Request):
+        if secret and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != secret:
+            return web.Response(status=403)
+        try:
+            update = Update.de_json(await request.json(), app.bot)
+        except Exception:
+            return web.Response(status=400)
+        await app.update_queue.put(update)  # answer Telegram right away; work happens in the background
+        return web.Response(text="ok")
+
+    async def health(_request):
+        return web.Response(text="ok")
+
+    web_app = web.Application(client_max_size=10 * 1024 * 1024)
+    web_app.add_routes([web.post("/telegram", telegram_hook), web.get("/", health), web.get("/health", health)])
+    runner = web.AppRunner(web_app, access_log=None)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    log.info("Web server listening on %s", port)
+
+    async with app:
+        await app.bot.set_webhook(
+            url=public_url.rstrip("/") + "/telegram",
+            secret_token=secret,
+            allowed_updates=Update.ALL_TYPES,
+        )
+        await app.start()
+        if os.environ.get("KEEP_AWAKE", "1") != "0":
+            asyncio.create_task(keep_awake(public_url))
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await app.stop()
+            await runner.cleanup()
+
+
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("new", new_chat))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
@@ -254,13 +347,7 @@ def main():
     # On Render (or any host with a public URL) use webhook mode; locally use polling.
     public_url = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL")
     if public_url:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get("PORT", "10000")),
-            url_path="telegram",
-            webhook_url=public_url.rstrip("/") + "/telegram",
-            secret_token=os.environ.get("WEBHOOK_SECRET") or None,
-        )
+        asyncio.run(run_webhook_server(app, public_url))
     else:
         app.run_polling()
 

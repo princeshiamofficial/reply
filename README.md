@@ -20,6 +20,8 @@ Telegram bot that turns a client chat screenshot or message into a ready-to-send
 | `ANTHROPIC_WORKSPACE_ID` | only if your Claude key is not workspace-scoped | Workspace ID from console.anthropic.com |
 | `ALLOWED_USER_IDS` | recommended | Comma-separated Telegram user IDs, or `any` |
 | `WEBHOOK_SECRET` | recommended | Any random string |
+| `AI_TIMEOUT_SECONDS` | no | Seconds to wait per model before trying the next. Default `25` |
+| `KEEP_AWAKE` | no | Set `0` to stop the bot pinging itself every 10 min. Default on |
 
 Note: Gemini free-tier data may be used by Google to improve its products. Use a paid key for sensitive client data.
 
@@ -30,6 +32,8 @@ New → Web Service → this repo
 - Instance: Free
 
 Render sets `RENDER_EXTERNAL_URL` automatically, and the bot registers its webhook on start.
+
+Render's free plan sleeps a service after 15 idle minutes. The bot pings its own `/health` page every 10 minutes to stay awake. One always-on service uses about 744 of the 750 free hours a month, so keep only this one free service running. For extra safety, add a free monitor (e.g. cron-job.org or UptimeRobot) that opens `https://<your-app>.onrender.com/health` every 10 minutes.
 
 ## Run locally
 ```
